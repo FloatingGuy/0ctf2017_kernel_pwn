@@ -8,4 +8,5 @@ all:
 
 clean:
 	sudo rmmod note.ko || true
+	sudo rm /dev/knote || true
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
