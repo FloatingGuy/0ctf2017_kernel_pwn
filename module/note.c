@@ -6,6 +6,7 @@
 #include <linux/fs.h>
 #include <linux/rbtree.h>
 #include <linux/hashtable.h>
+#include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <asm/errno.h>
@@ -71,7 +72,7 @@ struct read_io_t {
 	struct date_t date;
 	unsigned long buf_size;
 	void __user *buf;
-}
+};
 
 struct time_io_t {
     unsigned long cmd;
@@ -110,7 +111,7 @@ bool slot_insert(struct rb_root *root, struct slot_t *slot)
 	return true;
 }
 
-bool slot_search(struct rb_root *root, unsigned long addr)
+struct slot_t *slot_search(struct rb_root *root, unsigned long addr)
 {
 	struct rb_node *node = root->rb_node;
 
@@ -121,10 +122,10 @@ bool slot_search(struct rb_root *root, unsigned long addr)
 		else if (addr > cur->addr)
 			node = node->rb_right;
 		else
-			return true;
+			return container_of(node, struct slot_t, node);
 	}
 
-	return false;
+	return NULL;
 }
 
 bool slot_delete(struct rb_root *root, unsigned long addr)
@@ -140,7 +141,7 @@ bool slot_delete(struct rb_root *root, unsigned long addr)
 	return false;
 }
 
-unsigned long inline get_epoch(struct date_t *date)
+inline unsigned long get_epoch(struct date_t *date)
 {
     int days[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     int i;
@@ -211,7 +212,7 @@ struct note_t *alloc_note(void)
 	struct note_t *note = NULL;
 	struct slot_t *slot = NULL;
 
-	LOG("sizeof note: %d\n", sizeof(struct note_t));	
+	LOG("sizeof note: %ld\n", sizeof(struct note_t));	
 	note = kmalloc(sizeof(struct note_t), GFP_KERNEL);
 	if (!note)
 		goto out;
@@ -231,7 +232,6 @@ struct note_t *alloc_note(void)
 	if (ret)	
 		goto out;
 
-free_slot:
 	LOG("insert fail!\n");
 	kfree(slot);
 
@@ -246,6 +246,43 @@ free_note:
 
 out:
 	return note;
+}
+
+inline void insert_note(struct note_t *note)
+{
+	struct hlist_head *head;
+	struct hlist_node *node;
+	struct note_t *iter;
+	unsigned long epoch = note->epoch;
+	bool flag = false;
+
+	/* get corresponding hash list head */
+	head = &notes[hash_min(epoch, HASH_BITS(notes))];
+	node = head->first;
+
+	/* empty hlist */
+	if (!node) {
+		hlist_add_head(&(note->next), head);
+		return;
+	}
+
+	for(;;) {
+		/* add before a larger epoch */
+		iter = hlist_entry(node, struct note_t, next);
+		if (iter->epoch > epoch) {
+			hlist_add_before(&(note->next), node);
+			flag = true;
+			break;
+		}
+
+		if (node->next == NULL)
+			break;
+	
+		node = node->next;
+	}
+
+	/* at behind the last node */
+	hlist_add_behind(&(note->next), node);
 }
 
 int delete_note(unsigned long arg)
@@ -274,19 +311,82 @@ out:
 	return ret;
 }
 
+int edit_note_time(unsigned long arg)
+{
+	struct note_t *note, *new_note;
+	struct time_io_t io;
+	unsigned long epoch, new_epoch;
+	int ret;
+
+	LOG("edit time buf\n");
+
+	ret = copy_from_user((void *)&io, (void __user *)arg, sizeof(struct time_io_t));
+	if (ret) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	epoch = get_epoch(&(io.date));
+	note = find_note(epoch, io.magic);
+	if (!note) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	/* racing here */
+	new_epoch = get_epoch(&(io.new_date));	
+	new_note = kmalloc(sizeof(struct note_t), GFP_KERNEL);	
+	if (!new_note) {
+		ret = -EINVAL;
+		goto out;
+	}
+	new_note->epoch = new_epoch;
+	insert_note(new_note);
+
+	new_note->magic = note->magic;		
+	memcpy(&(new_note->date), &(io.new_date), sizeof(struct date_t));
+	new_note->buf = note->buf;
+
+out:
+	return ret;
+}
+
 int edit_note_buf(unsigned long arg)
 {
-	int ret;
 	struct note_t *note;
+	struct buf_io_t io;
+	unsigned long epoch;
+	int ret;
 
 	LOG("edit note buf\n");		
-		
+
+	ret = copy_from_user((void *)&io, (void __user *)arg, sizeof(struct buf_io_t));
+	if (ret) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	epoch = get_epoch(&(io.date));
+	note = find_note(epoch, io.magic);
+	if (!note) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	if (io.buf_size > BUFFER_SIZE) {
+		ret = -EINVAL;
+		goto out;
+	}
+	
+	return copy_from_user((void *)note->buf, io.buf, io.buf_size);
+
+out:
+	return ret;
 }
 
 int edit_note(unsigned long arg)
 {
 	unsigned long cmd;
-	int ret = 0;
 
 	get_user(cmd, (unsigned long *)arg);
 
@@ -312,7 +412,7 @@ int read_note(unsigned long arg)
 	}
 
 	epoch = get_epoch(&(io.date));
-	note = get_note(epoch, io.magic);
+	note = find_note(epoch, io.magic);
 
 	if (!note) {
 		ret = -EINVAL;
@@ -352,7 +452,7 @@ int add_note(unsigned long arg)
 
 	note->magic = NOTE_MAGIC + (cnt++);
 	memcpy(&(note->date), &(io.date), sizeof(struct date_t));
-	note->epoch = get_epoch(note);
+	note->epoch = get_epoch(&(note->date));
 
 	if (io.buf_size > BUFFER_SIZE) {
 		ret = -EINVAL;
@@ -364,7 +464,8 @@ int add_note(unsigned long arg)
 		goto free_note;
 	}
 
-	hash_add(notes, &note->next, note->epoch);	
+	insert_note(note);
+
 	return 0;
 
 free_note:
@@ -388,8 +489,11 @@ static long note_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			break;
 		case NOTE_READ:
 			ret = read_note(arg);
+			break;
+		case NOTE_EDIT:
+			ret = edit_note(arg);
+			break;
 		default:
-			ret = 
 			break;
 	}
 	return ret;
