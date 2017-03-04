@@ -25,7 +25,8 @@
 /* knote functions */
 #define NOTE_ADD 0
 #define NOTE_DELETE 1
-#define NOTE_EDIT 2
+#define NOTE_READ 2
+#define NOTE_EDIT 3
 
 /* consts */
 #define BUFFER_SIZE 1024
@@ -36,35 +37,54 @@ static DEFINE_MUTEX(hlist_lock);
 static DEFINE_HASHTABLE(notes, 3);
 static struct rb_root slot_cache = RB_ROOT;
 
+struct slot_t {
+	struct rb_node node;
+	unsigned long addr;
+};
+
+struct date_t {
+	unsigned long year, month, day;
+	unsigned long h, m, s;
+};
+
 struct note_t {
     unsigned long magic;
-    unsigned long year, month, day;
-    unsigned long h, m, s;
+	struct date_t date;
     unsigned long epoch;
     void *buf;
     struct hlist_node next;
 };
 
 struct note_io_t {
-    unsigned long year, month, day;
-    unsigned long h, m, s;
+	struct date_t date;
 	unsigned long buf_size;
     void __user *buf; 
 };
 
-struct time_io_t {
-    int magic;
-    unsigned long year, month, day;
-    unsigned long h, m, s;
+struct delete_io_t {
+	unsigned long magic;
+	struct date_t date;
 };
 
-struct slot_t {
-	struct rb_node node;
-	unsigned long addr;
+struct read_io_t {
+	unsigned long magic;
+	struct date_t date;
+	unsigned long buf_size;
+	void __user *buf;
+}
+
+struct time_io_t {
+    unsigned long cmd;
+	unsigned long magic;
+	struct date_t date;
+	struct date_t new_date;
 };
 
 struct buf_io_t {
-    int magic;
+	unsigned long cmd;
+    unsigned long magic;
+	struct date_t date;
+	unsigned long buf_size;
     void __user *buf;
 };
    
@@ -120,23 +140,23 @@ bool slot_delete(struct rb_root *root, unsigned long addr)
 	return false;
 }
 
-unsigned long inline get_epoch(struct note_t *note)
+unsigned long inline get_epoch(struct date_t *date)
 {
     int days[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     int i;
     unsigned long yday = 0;
 
-    if ((note->year % 4 == 0 && note->year % 100 != 0)
-       || (note->year % 400 == 0))
+    if ((date->year % 4 == 0 && date->year % 100 != 0)
+       || (date->year % 400 == 0))
         days[2] += 1;
 
-    for (i = 1; i < note->month; ++i)
+    for (i = 1; i < date->month; ++i)
         yday += days[i];
-    yday += note->day;
+    yday += date->day;
 
-    return note->s + note->m * 60 + note->h * 3600 + yday * 86400
-        + (note->year-70) * 31536000 + ((note->year - 69) / 4) * 86400 
-        - ((note->year - 1) / 100) * 86400 + ((note->year + 299) / 400) * 86400;
+    return date->s + date->m * 60 + date->h * 3600 + yday * 86400
+        + (date->year-70) * 31536000 + ((date->year - 69) / 4) * 86400 
+        - ((date->year - 1) / 100) * 86400 + ((date->year + 299) / 400) * 86400;
 }
 
 /*
@@ -171,6 +191,18 @@ void put_note(struct note_t *note)
 	}
 	
 	kfree(note);	
+}
+
+struct note_t *find_note(unsigned long epoch, unsigned long magic)
+{
+	struct note_t *note;
+
+	hash_for_each_possible(notes, note, next, epoch) {
+		if (note->magic == magic)
+			return note;
+	}
+
+	return NULL;
 }
 
 struct note_t *alloc_note(void)
@@ -216,6 +248,88 @@ out:
 	return note;
 }
 
+int delete_note(unsigned long arg)
+{
+	struct delete_io_t io;
+	struct note_t *note;
+	unsigned long epoch;
+	int ret;
+		
+	ret = copy_from_user((void *)&io, (void __user *)arg, sizeof(struct delete_io_t));
+	if (ret) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	epoch = get_epoch(&(io.date));
+	note = find_note(epoch, io.magic);
+	if (!note) {
+		ret = -EINVAL;
+		goto out;
+	}
+	
+	put_note(note);
+	
+out:
+	return ret;
+}
+
+int edit_note_buf(unsigned long arg)
+{
+	int ret;
+	struct note_t *note;
+
+	LOG("edit note buf\n");		
+		
+}
+
+int edit_note(unsigned long arg)
+{
+	unsigned long cmd;
+	int ret = 0;
+
+	get_user(cmd, (unsigned long *)arg);
+
+	if (cmd == EDIT_NOTE)
+		return edit_note_buf(arg);
+	else if (cmd == EDIT_TIME)
+		return edit_note_time(arg);
+	else
+		return -EINVAL;
+}
+
+int read_note(unsigned long arg)
+{
+	struct read_io_t io;
+	struct note_t *note;
+	unsigned long epoch;
+	int ret;
+
+	ret = copy_from_user((void *)&io, (void __user *)arg, sizeof(struct read_io_t));
+	if (ret) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	epoch = get_epoch(&(io.date));
+	note = get_note(epoch, io.magic);
+
+	if (!note) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	if (io.buf_size > BUFFER_SIZE) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	return copy_to_user(io.buf, note->buf, io.buf_size);
+
+out:
+	return ret;
+}
+
 int add_note(unsigned long arg)
 {
 	struct note_io_t io;
@@ -237,14 +351,13 @@ int add_note(unsigned long arg)
 	}
 
 	note->magic = NOTE_MAGIC + (cnt++);
-	note->year = io.year;
-	note->month = io.month;
-	note->day = io.day;
-	note->h = io.h;
-	note->m = io.m;
-	note->s = io.s;
+	memcpy(&(note->date), &(io.date), sizeof(struct date_t));
 	note->epoch = get_epoch(note);
 
+	if (io.buf_size > BUFFER_SIZE) {
+		ret = -EINVAL;
+		goto out;
+	}
 	ret = copy_from_user(note->buf, io.buf, io.buf_size); 
 	if (ret) {
 		ret = -EINVAL;
@@ -270,7 +383,13 @@ static long note_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		case NOTE_ADD:
 			ret = add_note(arg);
 			break;
+		case NOTE_DELETE:
+			ret = delete_note(arg);
+			break;
+		case NOTE_READ:
+			ret = read_note(arg);
 		default:
+			ret = 
 			break;
 	}
 	return ret;
