@@ -299,6 +299,8 @@ int delete_note(unsigned long arg)
 	}
 
 	epoch = get_epoch(&(io.date));
+
+	mutex_lock(&hlist_lock);
 	note = find_note(epoch, io.magic);
 	if (!note) {
 		ret = -EINVAL;
@@ -306,6 +308,7 @@ int delete_note(unsigned long arg)
 	}
 	
 	put_note(note);
+	mutex_unlock(&hlist_lock);
 	
 out:
 	return ret;
@@ -367,6 +370,8 @@ int edit_note_buf(unsigned long arg)
 	}
 
 	epoch = get_epoch(&(io.date));
+
+	mutex_lock(&hlist_lock);
 	note = find_note(epoch, io.magic);
 	if (!note) {
 		ret = -EINVAL;
@@ -378,7 +383,10 @@ int edit_note_buf(unsigned long arg)
 		goto out;
 	}
 	
-	return copy_from_user((void *)note->buf, io.buf, io.buf_size);
+	ret = copy_from_user((void *)note->buf, io.buf, io.buf_size);
+	mutex_unlock(&hlist_lock);
+
+	return ret;
 
 out:
 	return ret;
@@ -412,6 +420,8 @@ int read_note(unsigned long arg)
 	}
 
 	epoch = get_epoch(&(io.date));
+
+	mutex_lock(&hlist_lock);
 	note = find_note(epoch, io.magic);
 
 	if (!note) {
@@ -424,7 +434,10 @@ int read_note(unsigned long arg)
 		goto out;
 	}
 
-	return copy_to_user(io.buf, note->buf, io.buf_size);
+	ret = copy_to_user(io.buf, note->buf, io.buf_size);
+	mutex_unlock(&hlist_lock);
+
+	return ret;
 
 out:
 	return ret;
@@ -463,8 +476,10 @@ int add_note(unsigned long arg)
 		ret = -EINVAL;
 		goto free_note;
 	}
-
+	
+	mutex_lock(&hlist_lock);
 	insert_note(note);
+	mutex_unlock(&hlist_lock);
 
 	return 0;
 
