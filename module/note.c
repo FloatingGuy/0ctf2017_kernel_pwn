@@ -401,7 +401,7 @@ int edit_note(unsigned long arg)
 {
 	unsigned long cmd;
 
-	get_user(cmd, (unsigned long *)arg);
+	get_user(cmd, (unsigned long __user *)arg);
 
 	if (cmd == EDIT_NOTE)
 		return edit_note_buf(arg);
@@ -449,8 +449,6 @@ int read_note(unsigned long arg)
 	ret = copy_to_user(io.buf, note->buf, io.buf_size);
 	mutex_unlock(&hlist_lock);
 
-	return ret;
-
 out:
 	return ret;
 }
@@ -459,6 +457,7 @@ int add_note(unsigned long arg)
 {
 	struct note_io_t io;
 	struct note_t *note;
+	unsigned long magic;
 	int ret;
 
 	ret = copy_from_user((void *)&io, 
@@ -476,7 +475,8 @@ int add_note(unsigned long arg)
 		goto free_note;
 	}
 
-	note->magic = NOTE_MAGIC + (cnt++);
+	magic = NOTE_MAGIC + (cnt++);
+	note->magic = magic;
 	memcpy(&(note->date), &(io.date), sizeof(struct date_t));
 	note->epoch = get_epoch(&(note->date));
 
@@ -491,6 +491,7 @@ int add_note(unsigned long arg)
 	}
 	
 	insert_note(note);
+	put_user(magic, (unsigned long __user *)arg);
 	mutex_unlock(&hlist_lock);
 
 	return 0;
