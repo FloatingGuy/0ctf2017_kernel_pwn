@@ -358,6 +358,7 @@ int edit_note_buf(unsigned long arg)
 {
 	struct note_t *note;
 	struct buf_io_t io;
+	struct slot_t *slot;
 	unsigned long epoch;
 	int ret;
 
@@ -382,11 +383,15 @@ int edit_note_buf(unsigned long arg)
 		ret = -EINVAL;
 		goto out;
 	}
-	
+
+	slot = slot_search(&slot_cache, (unsigned long)note->buf);
+	if (!slot) {
+		ret = -EINVAL;
+		goto out;
+	}
+
 	ret = copy_from_user((void *)note->buf, io.buf, io.buf_size);
 	mutex_unlock(&hlist_lock);
-
-	return ret;
 
 out:
 	return ret;
@@ -410,6 +415,7 @@ int read_note(unsigned long arg)
 {
 	struct read_io_t io;
 	struct note_t *note;
+	struct slot_t *slot;
 	unsigned long epoch;
 	int ret;
 
@@ -430,6 +436,12 @@ int read_note(unsigned long arg)
 	}
 
 	if (io.buf_size > BUFFER_SIZE) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	slot = slot_search(&slot_cache, (unsigned long)note->buf);
+	if (!slot) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -457,6 +469,7 @@ int add_note(unsigned long arg)
 		goto out;
 	}
 
+	mutex_lock(&hlist_lock);
 	note = alloc_note();	
 	if (!note) {
 		ret = -ENOMEM;
@@ -477,7 +490,6 @@ int add_note(unsigned long arg)
 		goto free_note;
 	}
 	
-	mutex_lock(&hlist_lock);
 	insert_note(note);
 	mutex_unlock(&hlist_lock);
 
