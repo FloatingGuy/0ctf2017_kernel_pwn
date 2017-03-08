@@ -9,13 +9,14 @@
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+#include <linux/tty.h>
 #include <asm/errno.h>
 #define DEBUG
 
 #ifdef DEBUG
 #define LOG(...) printk(KERN_INFO __VA_ARGS__)
-#elif
-#define LOG(...) ((void) 0)
+#else
+#define LOG(...)
 #endif
 
 /* magic number */
@@ -24,10 +25,12 @@
 #define EDIT_NOTE   0x1ee12ee23ee34ee4
 
 /* knote functions */
-#define NOTE_ADD 0
-#define NOTE_DELETE 1
-#define NOTE_READ 2
-#define NOTE_EDIT 3
+#define NOTE_CMD 0x1337
+#define NOTE_ADD (NOTE_CMD + 0)
+#define NOTE_DELETE (NOTE_CMD + 1)
+#define NOTE_READ (NOTE_CMD + 2)
+#define NOTE_EDIT (NOTE_CMD + 3)
+#define NOTE_LIST (NOTE_CMD + 4)
 
 /* consts */
 #define BUFFER_SIZE 1024
@@ -49,9 +52,9 @@ struct date_t {
 };
 
 struct note_t {
-    unsigned long magic;
 	struct date_t date;
     unsigned long epoch;
+    unsigned long magic;
     void *buf;
     struct hlist_node next;
 };
@@ -151,6 +154,9 @@ inline unsigned long get_epoch(struct date_t *date)
        || (date->year % 400 == 0))
         days[2] += 1;
 
+	if (date->month > 12)
+		date->month = 12;
+
     for (i = 1; i < date->month; ++i)
         yday += days[i];
     yday += date->day;
@@ -190,7 +196,8 @@ void put_note(struct note_t *note)
 		slot_delete(&slot_cache, (unsigned long)note->buf);
 		kfree(note->buf);
 	}
-	
+
+	hash_del(&(note->next));
 	kfree(note);	
 }
 
@@ -222,7 +229,9 @@ struct note_t *alloc_note(void)
 	note->buf = kmalloc(BUFFER_SIZE, GFP_KERNEL);
 	if (!note->buf) 
 		goto free_note;
-	
+	LOG("tty name: %s tty link: 0x%08lx\n", ((struct tty_struct *)(note->buf))->name, (unsigned long)((struct tty_struct *)(note->buf))->link);
+	// printk("start name: %s\n", (char *)(note->buf) + 0x190);
+
 	slot = kmalloc(sizeof(struct slot_t), GFP_KERNEL);
 	if (!slot)
 		goto free_buf;
@@ -258,6 +267,7 @@ inline void insert_note(struct note_t *note)
 
 	/* get corresponding hash list head */
 	head = &notes[hash_min(epoch, HASH_BITS(notes))];
+	// LOG("epoch: 0x%08lx into bin: %d\n", epoch, hash_min(epoch, HASH_BITS(notes)));
 	node = head->first;
 
 	/* empty hlist */
@@ -304,10 +314,12 @@ int delete_note(unsigned long arg)
 	note = find_note(epoch, io.magic);
 	if (!note) {
 		ret = -EINVAL;
-		goto out;
+		goto unlock_out;
 	}
 	
 	put_note(note);
+
+unlock_out:
 	mutex_unlock(&hlist_lock);
 	
 out:
@@ -320,8 +332,6 @@ int edit_note_time(unsigned long arg)
 	struct time_io_t io;
 	unsigned long epoch, new_epoch;
 	int ret;
-
-	LOG("edit time buf\n");
 
 	ret = copy_from_user((void *)&io, (void __user *)arg, sizeof(struct time_io_t));
 	if (ret) {
@@ -349,6 +359,14 @@ int edit_note_time(unsigned long arg)
 	new_note->magic = note->magic;		
 	memcpy(&(new_note->date), &(io.new_date), sizeof(struct date_t));
 	new_note->buf = note->buf;
+#ifdef DEBUG
+	LOG("old note buf: 0x%08lx\n", (unsigned long)note->buf);
+	// LOG("slot: 0x%08lx\n", (unsigned long)slot_search(&slot_cache, (unsigned long)note->buf));
+#endif
+
+	/* free note */
+	note->buf = NULL;
+	put_note(note);	
 
 out:
 	return ret;
@@ -376,21 +394,23 @@ int edit_note_buf(unsigned long arg)
 	note = find_note(epoch, io.magic);
 	if (!note) {
 		ret = -EINVAL;
-		goto out;
+		goto unlock_out;
 	}
 
 	if (io.buf_size > BUFFER_SIZE) {
 		ret = -EINVAL;
-		goto out;
+		goto unlock_out;
 	}
 
 	slot = slot_search(&slot_cache, (unsigned long)note->buf);
 	if (!slot) {
 		ret = -EINVAL;
-		goto out;
+		goto unlock_out;
 	}
 
 	ret = copy_from_user((void *)note->buf, io.buf, io.buf_size);
+
+unlock_out:
 	mutex_unlock(&hlist_lock);
 
 out:
@@ -419,8 +439,10 @@ int read_note(unsigned long arg)
 	unsigned long epoch;
 	int ret;
 
+	LOG("now read note\n");
 	ret = copy_from_user((void *)&io, (void __user *)arg, sizeof(struct read_io_t));
 	if (ret) {
+		LOG("copy from user fail\n");
 		ret = -EINVAL;
 		goto out;
 	}
@@ -432,21 +454,27 @@ int read_note(unsigned long arg)
 
 	if (!note) {
 		ret = -EINVAL;
-		goto out;
+		goto unlock_out;
 	}
+	LOG("find note check passed!");
 
 	if (io.buf_size > BUFFER_SIZE) {
 		ret = -EINVAL;
-		goto out;
+		goto unlock_out;
 	}
+	LOG("buffer size check passed!");
 
 	slot = slot_search(&slot_cache, (unsigned long)note->buf);
 	if (!slot) {
+		LOG("deleted slot note->buf: 0x%08lx\n", (unsigned long)note->buf);
 		ret = -EINVAL;
-		goto out;
+		goto unlock_out;
 	}
+	LOG("slot check passed!\n");
 
 	ret = copy_to_user(io.buf, note->buf, io.buf_size);
+
+unlock_out:
 	mutex_unlock(&hlist_lock);
 
 out:
@@ -482,7 +510,7 @@ int add_note(unsigned long arg)
 
 	if (io.buf_size > BUFFER_SIZE) {
 		ret = -EINVAL;
-		goto out;
+		goto free_note;
 	}
 	ret = copy_from_user(note->buf, io.buf, io.buf_size); 
 	if (ret) {
@@ -497,17 +525,33 @@ int add_note(unsigned long arg)
 	return 0;
 
 free_note:
+	mutex_unlock(&hlist_lock);
 	put_note(note);
 
 out:
 	return ret;
 }
 
+int list_note(void)
+{
+	struct note_t *note;
+	int i;
+
+	hash_for_each(notes, i, note, next) {
+		LOG("note magic: 0x%08lx epoch: 0x%08lx buf: 0x%08lx\n", 
+				note->magic,
+				note->epoch,
+				(unsigned long)note->buf);
+	}
+
+	return 0;
+}
+
 static long note_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	long ret;
 
-	LOG("ioctl device\n");
+	printk("ioctl device %d\n", cmd);
 	switch(cmd) {
 		case NOTE_ADD:
 			ret = add_note(arg);
@@ -521,7 +565,13 @@ static long note_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		case NOTE_EDIT:
 			ret = edit_note(arg);
 			break;
+#ifdef DEBUG
+		case NOTE_LIST:
+			ret = list_note();
+			break;
+#endif
 		default:
+			ret = -EINVAL;
 			break;
 	}
 	return ret;
@@ -560,9 +610,33 @@ static int __init init_note(void)
 	return ret;
 }
 
+void clean_hlist(void)
+{
+	struct note_t *note, *prev_note = NULL;
+	int i;
+
+	hash_for_each(notes, i, note, next) {
+		if (prev_note)
+			put_note(prev_note);
+
+		prev_note = note;
+	}
+
+	if (prev_note)
+		put_note(prev_note);
+}
+
+void cleanup(void)
+{
+	mutex_lock(&hlist_lock);
+	clean_hlist();
+	mutex_unlock(&hlist_lock);
+}
+
 static void __exit exit_note(void)
 {
 	unregister_chrdev(1337, "knote");
+	cleanup();
 	LOG("exit.\n");
 }
 

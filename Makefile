@@ -1,5 +1,5 @@
 CFLAGS := 
-LFLAGS := -lutil
+LFLAGS := -lutil -lpthread
 ALL := exploit
 
 all: $(ALL)
