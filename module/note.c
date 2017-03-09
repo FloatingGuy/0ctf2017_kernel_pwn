@@ -11,7 +11,7 @@
 #include <linux/uaccess.h>
 #include <linux/tty.h>
 #include <asm/errno.h>
-#define DEBUG
+/* #define DEBUG */
 
 #ifdef DEBUG
 #define LOG(...) printk(KERN_INFO __VA_ARGS__)
@@ -166,29 +166,6 @@ inline unsigned long get_epoch(struct date_t *date)
         - ((date->year - 1) / 100) * 86400 + ((date->year + 299) / 400) * 86400;
 }
 
-/*
-long test(void)
-{
-	int i;
-	struct slot_t *p;
-
-	for (i = 1; i < 20; i += 2)
-	{
-		p = kmalloc(sizeof(struct slot_t), GFP_KERNEL);
-		p->addr = i;
-
-		slot_insert(&slot_cache, p);
-	}
-
-	LOG("search %d result: %d\n", 3, slot_search(&slot_cache, 3));
-	LOG("search %d result: %d\n", 17, slot_search(&slot_cache, 17));
-	LOG("search %d result: %d\n", 6, slot_search(&slot_cache, 6));
-	LOG("search %d result: %d\n", 22, slot_search(&slot_cache, 22));
-
-	return 0;
-}
-*/
-
 void put_note(struct note_t *note)
 {
 	if (note->buf) {
@@ -230,7 +207,6 @@ struct note_t *alloc_note(void)
 	if (!note->buf) 
 		goto free_note;
 	LOG("tty name: %s tty link: 0x%08lx\n", ((struct tty_struct *)(note->buf))->name, (unsigned long)((struct tty_struct *)(note->buf))->link);
-	// printk("start name: %s\n", (char *)(note->buf) + 0x190);
 
 	slot = kmalloc(sizeof(struct slot_t), GFP_KERNEL);
 	if (!slot)
@@ -359,10 +335,9 @@ int edit_note_time(unsigned long arg)
 	new_note->magic = note->magic;		
 	memcpy(&(new_note->date), &(io.new_date), sizeof(struct date_t));
 	new_note->buf = note->buf;
-#ifdef DEBUG
+
 	LOG("old note buf: 0x%08lx\n", (unsigned long)note->buf);
-	// LOG("slot: 0x%08lx\n", (unsigned long)slot_search(&slot_cache, (unsigned long)note->buf));
-#endif
+	LOG("slot: 0x%08lx\n", (unsigned long)slot_search(&slot_cache, (unsigned long)note->buf));
 
 	/* free note */
 	note->buf = NULL;
@@ -551,7 +526,6 @@ static long note_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	long ret;
 
-	printk("ioctl device %d\n", cmd);
 	switch(cmd) {
 		case NOTE_ADD:
 			ret = add_note(arg);

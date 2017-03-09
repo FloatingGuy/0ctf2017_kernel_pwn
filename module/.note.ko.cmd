@@ -1,0 +1,1 @@
+cmd_/home/test/0ctf2017_kernel_pwn/module/note.ko := ld -r -m elf_x86_64 -T ./scripts/module-common.lds --build-id  -o /home/test/0ctf2017_kernel_pwn/module/note.ko /home/test/0ctf2017_kernel_pwn/module/note.o /home/test/0ctf2017_kernel_pwn/module/note.mod.o
